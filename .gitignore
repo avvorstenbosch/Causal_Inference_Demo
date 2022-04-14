@@ -11,7 +11,8 @@
 # Example code in package build process
 *-Ex.R
 
-# Output files from R CMD build
+# Output files from R CMD bu
+ild
 /*.tar.gz
 
 # Output files from R CMD check
@@ -41,3 +42,12 @@ vignettes/*.pdf
 # Data formats
 *.csv
 
+#Don't track Tex files
+*.log
+*.aux
+*.nav
+*.out
+*.snm
+*.toc
+*.db
+main_*
