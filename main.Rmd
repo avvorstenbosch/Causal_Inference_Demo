@@ -2,9 +2,11 @@
 title: 'Causal Inference Demo'
 author: "Alex van Vorstenbosch"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
+fontsize: 10pt
 output:
-  beamer_presentation: hanover
-  color_theme: dolphin
+  beamer_presentation: 
+    theme: "hannover"
+    colortheme: "dolphin"
 header-includes:
   - \usepackage{tikz}
   - \usepackage{multicol}
@@ -26,10 +28,15 @@ header-includes:
 knitr::opts_chunk$set(eval = TRUE, cache=TRUE, echo = FALSE, warning = FALSE, message = FALSE)
 ```
 
-```{r}
+```{r packages}
 library(tidyverse)
 library(dagitty)
-library(brms)
+library(brms) # bayesian analyse
+library(broom) # voor tidy regressie resultaten
+library(broom.mixed) # broom voor brms
+library(tidybayes) # voor extracting samples
+library(ggridges) # voor ggridges plots
+set.seed(300)
 ```
 
 
@@ -39,7 +46,7 @@ library(brms)
 * DAG
 * Simulating the data
 * Can we use BRMS to retreive the parameters
-* \textbf(Real World Data...)
+* \textbf{Real World Data...}
 * Is our dag valid?
 * Results
 
@@ -51,8 +58,279 @@ library(brms)
 * ...yet, it is stereotypically seen as boring and difficult.
 * In this demo we explore what influences school performance in Math
 * ... and possible intervention paths we could use.
+* As outcome variable we take the end of year grade in Mathematics for high school students.
 
-# DAG
+# DAG - The Full Causal Pentagram
+```{r}
+dag <- dagitty('dag {
+bb="-4.361,-3.907,6.053,5.052"
+EducationParents [pos="0.165,-2.506"]
+ExtraEducationSupport [pos="-2.624,0.509"]
+Grade [outcome,pos="0.128,0.557"]
+HigherEducationAspiration [pos="-1.235,-0.496"]
+InternetAcces [pos="-0.979,-1.746"]
+PaidCourses [pos="-0.488,2.606"]
+RegionHouse [pos="-2.460,-2.562"]
+Sex [pos="2.442,-1.390"]
+SocietalBias [latent,pos="1.391,-0.504"]
+StudyTime [pos="-2.019,2.583"]
+EducationParents -> Grade
+EducationParents -> HigherEducationAspiration
+ExtraEducationSupport -> Grade
+ExtraEducationSupport -> PaidCourses
+HigherEducationAspiration -> ExtraEducationSupport
+HigherEducationAspiration -> Grade
+HigherEducationAspiration -> PaidCourses
+HigherEducationAspiration -> StudyTime
+InternetAcces -> Grade
+PaidCourses -> Grade
+RegionHouse -> EducationParents
+RegionHouse -> HigherEducationAspiration
+RegionHouse -> InternetAcces
+Sex -> SocietalBias
+SocietalBias -> Grade
+SocietalBias -> HigherEducationAspiration
+StudyTime -> ExtraEducationSupport
+StudyTime -> Grade
+StudyTime -> PaidCourses
+}
+')
+plot(dag)
+```
+The unmeasured variable SocietalBias explains how Sex affects Grade and HigherEducationAspiration.
+However, since Sex is only a 'Mechanism', we can remove it from the DAG and simplify it. 
 
 
+<!--
+This causal model is one of the mental models one might design for features influencing final grades.
+We are not saying this model is correct. In fact, this model might communicate a rather simplistic view.
+
+One might add many more features, but this will over complicate the model, even this DAG is already rather complex.
+The most important part is that we communicate this DAG, as it informs other on the assumptions behind our models.
+
+Important to note is that a subject such as making a DAG, and as a consequence simulating data from this Data Generating Process (DGP),
+might feel like a sensitive subject. Quite rightfully so. Just remember, it feels sensitive because you are being very explicit about assumptions, which makes you vulnerable.
+In any other analysis you might have done, you bake in the same set of assumptions, but you don't make them as explicit, giving a false sense of protection and safety!
+-->
+
+# DAG - The (slightly simplified) Causal Pentagram
+```{r}
+dag <- dagitty('dag {
+bb="-4.361,-3.907,6.053,5.052"
+EducationParents [pos="0.165,-2.506"]
+ExtraEducationSupport [pos="-2.624,0.509"]
+Grade [outcome,pos="0.128,0.557"]
+HigherEducationAspiration [pos="-1.235,-0.496"]
+InternetAcces [pos="-0.979,-1.746"]
+PaidCourses [pos="-0.488,2.606"]
+RegionHouse [pos="-2.460,-2.562"]
+Sex [pos="2.442,-1.390"]
+StudyTime [pos="-2.019,2.583"]
+EducationParents -> Grade
+EducationParents -> HigherEducationAspiration
+ExtraEducationSupport -> Grade
+ExtraEducationSupport -> PaidCourses
+HigherEducationAspiration -> ExtraEducationSupport
+HigherEducationAspiration -> Grade
+HigherEducationAspiration -> PaidCourses
+HigherEducationAspiration -> StudyTime
+InternetAcces -> Grade
+PaidCourses -> Grade
+RegionHouse -> EducationParents
+RegionHouse -> HigherEducationAspiration
+RegionHouse -> InternetAcces
+Sex -> Grade
+Sex -> HigherEducationAspiration
+StudyTime -> ExtraEducationSupport
+StudyTime -> Grade
+StudyTime -> PaidCourses
+}
+')
+plot(dag)
+```
+
+
+# Simulate data
+```{r}
+#Starting in the upper half of the DAG
+N=500
+RegionHouse = sample(x = c("R", "U"), size=N, replace=TRUE, prob=c(0.3,0.7))
+
+EducationParents = ifelse(RegionHouse=="U",
+                          sample(x = 1:2, size=N, replace=TRUE, prob=c(0.4,0.6)),
+                          sample(x = 1:2, size=N, replace=TRUE, prob=c(0.6,0.4)))
+
+InternetAcces = ifelse(RegionHouse=="U",
+                          sample(x = c(TRUE,FALSE), size=N, replace=TRUE, prob=c(0.85,0.15)),
+                          sample(x = c(TRUE,FALSE), size=N, replace=TRUE, prob=c(0.95,0.05)))
+
+Sex = sample(x = c("M", "F"), size=N, replace=TRUE, prob=c(0.5,0.5))
+
+CalcHigherEducation <- function(RegionHouse, EducationParents, Sex){
+  # Samples HigherEducationAspiration based on 3 inputs.
+  # Assumption: Growing up in a rural region you may be less motivated to go to college.
+  # Assumption: Due to societal pressure, women might be less likely to persue college. 
+  HEA_base = 0.6
+  Sex_effect = ifelse(Sex=="M", 0.05, -0.05)
+  EducationParents_effect = ifelse(Sex==1,-0.1,0.1)
+  RegionHouse_effect = ifelse(RegionHouse=="R", -0.05, 0.05)
+  HEA_p = HEA_base + Sex_effect + EducationParents_effect + RegionHouse_effect
+  HEA = rbernoulli(n=length(HEA_p) ,p=HEA_p)
+  return(HEA)
+}
+HigherEducationAspiration = CalcHigherEducation(RegionHouse, EducationParents, Sex)
+
+StudyTime = ifelse(HigherEducationAspiration==1,
+                   sample(x = 0:3, size=N, replace=TRUE, prob=c(0.15,0.15,0.35,0.35)),
+                   sample(x = 0:3, size=N, replace=TRUE, prob=c(0.3,0.35,0.25,0.1))
+)
+
+CalcExtraEducationSupport <- function(HigherEducationAspiration, StudyTime){
+  # Samples ExtraEducationSupport based on 2 inputs
+  # Assumption: If you are good at doing homework yourself (more hours), you get less support
+  # Assumption: If you are motivated to go to college, you might seek out more support even if you study a lot
+  EAS_base = 0.2
+  HEA_effect = ifelse(HigherEducationAspiration==1, 0.075, -0.05)
+  StudyTime_effect = -0.025*StudyTime
+  EAS_p = EAS_base + HEA_effect + StudyTime_effect
+  EAS = rbernoulli(n=length(EAS_p) ,p=EAS_p)
+  return(EAS)
+}
+ExtraEducationalSupport = CalcExtraEducationSupport(HigherEducationAspiration, StudyTime)
+  
+CalcPaidCourses <- function(StudyTime, HigherEducationAspiration, ExtraEducationalSupport){
+  # Samples PaidCourses based on 3 inputs
+  # Assumption: If you study little, and get no extra support, but want to go to college,
+  #             you might try to catch up using paid courses
+  # Assumption: The opposite might also be true, college + many hours studying + extra support,
+  #             may mean the student is more likely to also pay for extra courses
+  Paid_base = 0.05
+  effect = rep(0, length(StudyTime))
+  for (i in length(StudyTime)){
+    if(StudyTime[i]<2 & HigherEducationAspiration[i]==1 & ExtraEducationalSupport[i]==0){
+      effect[i] = 0.1
+    } else if(StudyTime[i]>3 & HigherEducationAspiration[i]==1 & ExtraEducationalSupport[i]==1){
+      effect[i] = 0.1
+    }
+  }
+  Paid_p = Paid_base + effect
+  Paid = rbernoulli(n=length(Paid_p) ,p=Paid_p)
+}
+PaidCourses = CalcPaidCourses(StudyTime, HigherEducationAspiration, ExtraEducationalSupport)
+  
+```
+
+## simulated grades distribution
+```{r}
+# Finally, calculate grade
+set.seed(925)
+Grade = rnorm(n=500, mean=5.0, sd=0.2) + 
+  1*PaidCourses +
+  0.5*StudyTime + 
+  1*ExtraEducationalSupport +
+  0.5*HigherEducationAspiration +
+  0.35*InternetAcces -0.35 + #convenient way to get include negative effect
+  ifelse(RegionHouse=="U",0.0,-0.5) +
+  ifelse(EducationParents==2,0.5,-1) +
+  ifelse(Sex=="F", -0.2,0.2)
+hist(Grade,breaks=seq(0,10,0.5))
+```
+#Retrieve these direct effects using BRMS
+```{r}
+fullrun <- 1
+
+Formula <- Grade ~ 0  + Intercept + 
+                        PaidCourses +
+                        StudyTime +
+                        ExtraEducationalSupport +
+                        HigherEducationAspiration +
+                        InternetAcces + 
+                        EducationParents +
+                        Sex
+# To treat the intercept as an ordinary population-level effect and avoid the centering parameterization, use 0 + Intercept on the right-hand side of the model formula.
+    
+sim_data <- data.frame(PaidCourses,
+                        StudyTime,
+                        ExtraEducationalSupport,
+                        HigherEducationAspiration,
+                        InternetAcces,
+                        EducationParents,
+                        Sex, 
+                        Grade)
+
+priors <- c(set_prior("normal(0, 0.5)", class = "b", coef = "Intercept"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "PaidCoursesTRUE"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "StudyTime"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "ExtraEducationalSupportTRUE"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "HigherEducationAspirationTRUE"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "InternetAccesTRUE"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "EducationParents"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "SexM"))
+
+if(fullrun){
+model_MM <- brm(
+            formula = Formula,
+            prior = priors,
+            data   = sim_data,
+            warmup = 500, 
+            iter   = 10000, 
+            chains = 6, 
+            inits  = "random",
+            cores  = 6,
+            seed = 123,
+            backend = "cmdstanr",
+            control = list(adapt_delta = 0.99, 
+                           max_treedepth = 17),
+            silent = TRUE)
+
+saveRDS(model_MM, "model_demo.rds")
+} else {
+ model_MM <- readRDS("model_demo.rds")}
+```
+```{r}
+
+samples_MM <- tidy_draws(model_MM) %>%
+  dplyr::select(starts_with("b_")) %>%
+  pivot_longer(cols = 1:8, names_to = "Model1", values_to = "Value") %>%
+  mutate(Variabele = str_sub(Model1, 3)) %>%
+  dplyr::select(Variabele, Value)
+
+ggplot(data = samples_MM, aes(x = Value, 
+                             y = Variabele, 
+                             fill = Variabele)) +
+  geom_density_ridges2(scale = 0.9, quantile_lines=TRUE,
+                      quantile_fun=function(x,...)mean(x)) +
+  scale_fill_viridis_d() +
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  labs(y = " ", x = "Schatting van de  coefficient")
+
+
+
+```
+
+
+True values:
+  PaidCourses               = 1
+  StudyTime                 = 0.5 
+  ExtraEducationalSupport   = 1
+  HigherEducationAspiration = 0.5
+  InternetAcces             = 0.35 + #convenient way to get include negative effect
+  RegionHouse               = 0.5 
+  EducationParents          = 1.5
+  Sex                       = 0.4
+# How does the model perform in terms of predictions?
+```{r}
+df_preds_MM1 <- as_tibble(predict(model_MM, newdata = sim_data))
+
+df_preds_MM2 <- cbind(sim_data, df_preds_MM1)
+
+
+ggplot() +
+    geom_segment(data = df_preds_MM2, aes(x = Grade, xend = Grade, y = Q2.5, yend = Q97.5), color = "grey50") +
+  geom_point(data = df_preds_MM2, aes(x = Grade, y = Estimate)) +
+  geom_abline(intercept = 0, slope = 1, color = "firebrick", linetype = "dashed") +
+  theme_bw()
+```
 
