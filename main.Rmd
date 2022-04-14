@@ -1,0 +1,58 @@
+---
+title: 'Causal Inference Demo'
+author: "Alex van Vorstenbosch"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  beamer_presentation: hanover
+  color_theme: dolphin
+header-includes:
+  - \usepackage{tikz}
+  - \usepackage{multicol}
+  - \usepackage{hyperref}
+  - \hypersetup{
+      colorlinks=true,
+      linkcolor=blue,
+      urlcolor=cyan,
+      }
+---
+<!--
+
+    includes:
+      in_header: preamble.tex
+
+--->
+
+```{r setup II, include=FALSE, eval=TRUE}
+knitr::opts_chunk$set(eval = TRUE, cache=TRUE, echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(dagitty)
+library(brms)
+```
+
+
+# What are we going to see
+
+* Defining the problem
+* DAG
+* Simulating the data
+* Can we use BRMS to retreive the parameters
+* \textbf(Real World Data...)
+* Is our dag valid?
+* Results
+
+
+
+# Defining the Problem
+
+* Mathematics is on of THE fundamental school subject...
+* ...yet, it is stereotypically seen as boring and difficult.
+* In this demo we explore what influences school performance in Math
+* ... and possible intervention paths we could use.
+
+# DAG
+
+
+
