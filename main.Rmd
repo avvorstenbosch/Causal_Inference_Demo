@@ -365,5 +365,269 @@ ggplot() +
 * This looks good! Most estimates overlap the true value within 1 sigma deviation.
 * Estimates seem consistent across the whole domain
 
+# Time for real data
+* We'll use \textcolor{cyan}{https://www.kaggle.com/datasets/dipam7/student-grade-prediction}
+* This dataset contains portugese data on Math grades of 395 students
+* Collected from 2 schools using Questionnaires and the schools grading Administration
+
+```{r}
+data_raw <- read.csv("./data/student-mat.csv", 
+                 stringsAsFactors = FALSE,
+                 check.names=FALSE)
+```
+
+```{r}
+data <- data_raw %>%
+        mutate(Sex = sex,
+               StudyTime = studytime-1,
+               EducationParents = ifelse(Medu==4 | Fedu==4, 1, 0),
+               PaidCourses = ifelse(paid=="yes", 1,0),
+               InternetAcces = ifelse(internet=="yes", 1, 0),
+               HigherEducationAspiration = ifelse(higher=="yes",1 ,0),
+               ExtraEducationalSupport = ifelse(schoolsup=="yes",1,0),
+               RegionHouse = address,
+               Grade = G3/2) %>%
+        select(Sex, StudyTime, EducationParents, PaidCourses, InternetAcces, HigherEducationAspiration, ExtraEducationalSupport, RegionHouse, Grade)
+        
+```
+```{r fig7, out.width="80%", fig.align = "center"}
+ggplot(data) + 
+  geom_histogram(aes(x=Grade), closed="left", fill="royalblue1", color='white', breaks=seq(0.0,10,0.5), show.legend=TRUE) + 
+  labs(title=paste("Distribution of Real Math Grades"), subtitle="By Alex", x="Grade", y="Counts (#)") +
+  scale_x_continuous(breaks=seq(0,10,1))
+```
+* Note he distribution is more spread out than our simulate distribution,
+* The cluster at Grade==0 is not proper grading data and should be removed.
+
+```{r}
+data <- data %>%
+        filter(Grade >= 1.0)
+```
+
+#Time for testing the model on the real data
+```{r}
+fullrun <- 1
+
+priors <- c(set_prior("normal(5.5, 0.5)", class = "b", coef = "Intercept"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "PaidCourses"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "StudyTime"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "ExtraEducationalSupport"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "HigherEducationAspiration"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "InternetAcces"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "EducationParents"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "SexM"))
+
+if(fullrun){
+  model_math_r <- brm(
+              formula = Formula,
+              prior = priors,
+              data   = data,
+              warmup = 500, 
+              iter   = 10000, 
+              chains = 6, 
+              inits  = "random",
+              cores  = 6,
+              seed = 123,
+              backend = "cmdstanr",
+              control = list(adapt_delta = 0.99, 
+                             max_treedepth = 17),
+              silent = TRUE,
+              refresh = 0)
+  
+  saveRDS(model_math_r, "./models/model_demo_r.rds")
+} else {
+  model_math_r <- readRDS("./models/model_demo_r.rds")
+}
+```
+
+# Checking our posterior and chains!
+
+```{r fig8, out.width="80%", fig.align = "center"}
+model_math_r %>%
+  plot(combo = c("hist", "trace"), widths = c(1, 1.5),
+       theme = theme_bw(base_size = 10),
+       ask   = FALSE
+       )
+  
+```
+Again, good mixing, and clean normal estimates for all parameters!
+```{r}
+summary(model_math_r)
+```
+
+```{r}
+# now we sample from the model in order to show our predictions
+samples_math_r <- tidy_draws(model_math_r) %>%
+  dplyr::select(starts_with("b_")) %>%
+  pivot_longer(cols = 1:8, names_to = "Model1", values_to = "Value") %>%
+  mutate(Feature = as.factor(str_sub(Model1, 3))) %>%
+  dplyr::select(Feature, Value)
+```
+
+# Bayesian Parameter Estimates on the real data
+
+```{r fig9, out.width="60%", fig.align = "center"}
+ggplot(samples_math_r, aes(x=Value, y=Feature, fill=Feature)) +
+  geom_density_ridges2(scale = 0.9, 
+                       quantile_lines=TRUE,
+                       quantile_fun=function(x,...)mean(x)) +
+  geom_vline(aes(xintercept = 0), color = "red", linetype = "dashed") +
+  scale_fill_viridis_d() +
+  theme(legend.position = "none") +
+  labs(y = " ", x = "coefficient estimates", title="Bayesian parameter estimates") + 
+  scale_x_continuous(breaks=seq(-2,6,0.5))
+```
+* Most parameters appear to have some effect
+* InternetAcces, HigherEducationAspiration and PaidCourses are questionable
+* The effect of ExtraEducationalSupport and PaidCourses is negative
+Hypothesis: Only 'problematic' students receive this support, Biasing the inference
+
+# How does the model do, predicting on the real data?
+
+```{r}
+preds_raw_r <- as_tibble(predict(model_math_r, newdata = data))
+
+preds_R <- cbind(data, preds_raw_r)
+
+plot_data_r = preds_R %>%
+            mutate(pred_min=Estimate-Est.Error,
+                   pred_max=Estimate+Est.Error)
+```
+
+```{r fig11, out.width="80%", fig.align = "center"}
+ggplot() +
+    geom_errorbar(data = plot_data_r, aes(x = Grade, xend = Grade, ymin=pred_min, ymax = pred_max), size=0.1, width=0.1, color = "red") +
+  geom_point(data = plot_data_r, aes(x = Grade, y = Estimate)) +
+  geom_abline(intercept = 0, slope = 1, color = "firebrick", linetype = "dashed") +
+  labs(y = "Predicted Grade", x = "True Grade", title="Grade vs. Predicted Grade")+
+  scale_x_continuous(breaks=seq(1,10,1)) +
+  scale_y_continuous(breaks=seq(1,10,1)) +
+  coord_fixed()
 
 
+```
+
+* Hmm, our model has very little predictive power, let's update the DAG
+
+# Updated DAG
+
+```{r fig12, out.width="80%", fig.align = "center"}
+dag_r <- dagitty('dag {
+bb="-4.361,-3.907,6.053,5.052"
+EducationParents [pos="0.165,-2.506"]
+ExtraEducationSupport [pos="-2.624,0.509"]
+FirstTrimesterGrade [pos="-2.368,3.880"]
+Grade [outcome,pos="0.128,0.557"]
+HigherEducationAspiration [pos="-1.235,-0.496"]
+InternetAcces [pos="-0.979,-1.746"]
+PaidCourses [pos="-0.488,2.606"]
+RegionHouse [pos="-2.460,-2.562"]
+Sex [pos="2.442,-1.390"]
+StudyTime [pos="-2.019,2.583"]
+EducationParents -> Grade
+EducationParents -> HigherEducationAspiration
+ExtraEducationSupport -> Grade
+ExtraEducationSupport -> PaidCourses
+FirstTrimesterGrade -> ExtraEducationSupport
+FirstTrimesterGrade -> Grade
+FirstTrimesterGrade -> PaidCourses
+HigherEducationAspiration -> ExtraEducationSupport
+HigherEducationAspiration -> Grade
+HigherEducationAspiration -> PaidCourses
+HigherEducationAspiration -> StudyTime
+InternetAcces -> Grade
+PaidCourses -> Grade
+RegionHouse -> EducationParents
+RegionHouse -> HigherEducationAspiration
+RegionHouse -> InternetAcces
+Sex -> Grade
+Sex -> HigherEducationAspiration
+StudyTime -> ExtraEducationSupport
+StudyTime -> Grade
+StudyTime -> PaidCourses
+}
+')
+plot(dag_r)
+```
+
+* When we don't include FirstTrimesterGrade, it's influence flows via ExtraEducationSupport and PaidCourses.
+
+```{r}
+data <- data_raw %>%
+        mutate(Sex = sex,
+               StudyTime = studytime-1,
+               EducationParents = ifelse(Medu==4 | Fedu==4, 1, 0),
+               PaidCourses = ifelse(paid=="yes", 1,0),
+               InternetAcces = ifelse(internet=="yes", 1, 0),
+               HigherEducationAspiration = ifelse(higher=="yes",1 ,0),
+               ExtraEducationalSupport = ifelse(schoolsup=="yes",1,0),
+               RegionHouse = address,
+               Grade = G3/2,
+               GradeFirstTrimester = G1/2) %>%
+        select(Sex, StudyTime, EducationParents, PaidCourses, InternetAcces, HigherEducationAspiration, ExtraEducationalSupport, RegionHouse, Grade, GradeFirstTrimester) %>%
+        filter(Grade>=1.0)
+
+Formula_r <- Grade ~ 0  + Intercept + 
+                        PaidCourses +
+                        StudyTime +
+                        ExtraEducationalSupport +
+                        HigherEducationAspiration +
+                        InternetAcces + 
+                        EducationParents +
+                        Sex +
+                        GradeFirstTrimester
+
+priors_r <- c(set_prior("normal(5.5, 0.5)", class = "b", coef = "Intercept"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "PaidCourses"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "StudyTime"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "ExtraEducationalSupport"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "HigherEducationAspiration"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "InternetAcces"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "EducationParents"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "SexM"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "GradeFirstTrimester"))
+
+
+model_math_r2 <- brm(
+            formula = Formula_r,
+            prior = priors_r,
+            data   = data,
+            warmup = 500, 
+            iter   = 10000, 
+            chains = 6, 
+            inits  = "random",
+            cores  = 6,
+            seed = 123,
+            backend = "cmdstanr",
+            control = list(adapt_delta = 0.99, 
+                           max_treedepth = 17),
+            silent = TRUE,
+            refresh = 0)
+
+saveRDS(model_math_r2, "./models/model_demo_r.rds")
+
+
+preds_raw_r2 <- as_tibble(predict(model_math_r2, newdata = data))
+
+preds_r2 <- cbind(data, preds_raw_r2)
+
+plot_data_r2 = preds_r2 %>%
+            mutate(pred_min=Estimate-Est.Error,
+                   pred_max=Estimate+Est.Error)
+```
+
+```{r fig13, out.width="80%", fig.align = "center"}
+ggplot() +
+    geom_errorbar(data = plot_data_r2, aes(x = Grade, xend = Grade, ymin=pred_min, ymax = pred_max), size=0.1, width=0.1, color = "red") +
+  geom_point(data = plot_data_r2, aes(x = Grade, y = Estimate)) +
+  geom_abline(intercept = 0, slope = 1, color = "firebrick", linetype = "dashed") +
+  labs(y = "Predicted Grade", x = "True Grade", title="Grade vs. Predicted Grade")+
+  scale_x_continuous(breaks=seq(1,10,1)) +
+  scale_y_continuous(breaks=seq(1,10,1)) +
+  coord_fixed()
+```
+```{r}
+summary(model_math_r2)
+```
+ At this point it is clear the DAG is broken, the results make no sense. 
+ Other than the fact that previous grades are a good indication of new grades
