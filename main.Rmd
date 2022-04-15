@@ -11,21 +11,10 @@ header-includes:
   - \usepackage{tikz}
   - \usepackage{multicol}
   - \usepackage{hyperref}
-  - \hypersetup{
-      colorlinks=true,
-      linkcolor=blue,
-      urlcolor=cyan,
-      }
 ---
-<!--
-
-    includes:
-      in_header: preamble.tex
-
---->
 
 ```{r setup II, include=FALSE, eval=TRUE}
-knitr::opts_chunk$set(eval = TRUE, cache=TRUE, echo = FALSE, warning = FALSE, message = FALSE)
+knitr::opts_chunk$set(eval = TRUE, cache=TRUE, echo = FALSE, warning = FALSE, message = FALSE, dev = 'pdf')
 ```
 
 ```{r packages}
@@ -61,7 +50,7 @@ set.seed(300)
 * As outcome variable we take the end of year grade in Mathematics for high school students.
 
 # DAG - The Full Causal Pentagram
-```{r}
+```{r fig1, out.width="80%", fig.align = "center"}
 dag <- dagitty('dag {
 bb="-4.361,-3.907,6.053,5.052"
 EducationParents [pos="0.165,-2.506"]
@@ -97,7 +86,7 @@ StudyTime -> PaidCourses
 ')
 plot(dag)
 ```
-The unmeasured variable SocietalBias explains how Sex affects Grade and HigherEducationAspiration.
+The unmeasured variable SocietalBias explains how the student's Sex effects Grade and HigherEducationAspiration.
 However, since Sex is only a 'Mechanism', we can remove it from the DAG and simplify it. 
 
 
@@ -114,7 +103,7 @@ In any other analysis you might have done, you bake in the same set of assumptio
 -->
 
 # DAG - The (slightly simplified) Causal Pentagram
-```{r}
+```{r fig2, out.width="80%", fig.align = "center"}
 dag <- dagitty('dag {
 bb="-4.361,-3.907,6.053,5.052"
 EducationParents [pos="0.165,-2.506"]
@@ -148,7 +137,8 @@ StudyTime -> PaidCourses
 ')
 plot(dag)
 ```
-
+This DAG is slightly simpler, but the 'Causal Pentagram' looks like it might cause problems.
+Time to find out!
 
 # Simulate data
 ```{r}
@@ -157,8 +147,8 @@ N=500
 RegionHouse = sample(x = c("R", "U"), size=N, replace=TRUE, prob=c(0.3,0.7))
 
 EducationParents = ifelse(RegionHouse=="U",
-                          sample(x = 1:2, size=N, replace=TRUE, prob=c(0.4,0.6)),
-                          sample(x = 1:2, size=N, replace=TRUE, prob=c(0.6,0.4)))
+                          sample(x = 0:1, size=N, replace=TRUE, prob=c(0.4,0.6)),
+                          sample(x = 0:1, size=N, replace=TRUE, prob=c(0.6,0.4)))
 
 InternetAcces = ifelse(RegionHouse=="U",
                           sample(x = c(TRUE,FALSE), size=N, replace=TRUE, prob=c(0.85,0.15)),
@@ -220,25 +210,35 @@ PaidCourses = CalcPaidCourses(StudyTime, HigherEducationAspiration, ExtraEducati
   
 ```
 
-## simulated grades distribution
+## Simulated grades distribution
 ```{r}
 # Finally, calculate grade
 set.seed(925)
-Grade = rnorm(n=500, mean=5.0, sd=0.2) + 
+Grade = rnorm(n=500, mean=5.0, sd=0.3) + 
   1*PaidCourses +
   0.5*StudyTime + 
   1*ExtraEducationalSupport +
-  0.5*HigherEducationAspiration +
-  0.35*InternetAcces -0.35 + #convenient way to get include negative effect
-  ifelse(RegionHouse=="U",0.0,-0.5) +
-  ifelse(EducationParents==2,0.5,-1) +
-  ifelse(Sex=="F", -0.2,0.2)
-hist(Grade,breaks=seq(0,10,0.5))
+  0.7*HigherEducationAspiration +
+  0.6*InternetAcces -0.6 + #convenient way to get include negative effect
+  ifelse(EducationParents==1, 0.5, -1) +
+  ifelse(Sex=="F", -0.25, 0.25)
 ```
-#Retrieve these direct effects using BRMS
+```{r fig3, out.width="80%", fig.align = "center"}
+plot_data = data.frame(Grade)
+ggplot(plot_data) + 
+  geom_histogram(aes(x=Grade), closed="left", fill="royalblue1", color='white', breaks=seq(1.0,10,0.5), show.legend=TRUE) + 
+  labs(title=paste("Distribution of 500 Simulated Math Grades"), subtitle="By Alex", x="Grade", y="Counts (#)") +
+  scale_x_continuous(breaks=seq(1,10,1))
+```
+In our simulation, Most students score between a 5.5 and a 6. This seems reasonable.
+Also, very high scores are rare, as well as extremely low scores. The distribution is roughly normal, but not quite. 
+
+# Retrieve these direct effects using BRMS
+
 ```{r}
 fullrun <- 1
 
+# We add 0 + intercept in order to stop BRMS from centering the model, now we can properly fit Intercept as in the original simulation
 Formula <- Grade ~ 0  + Intercept + 
                         PaidCourses +
                         StudyTime +
@@ -246,8 +246,7 @@ Formula <- Grade ~ 0  + Intercept +
                         HigherEducationAspiration +
                         InternetAcces + 
                         EducationParents +
-                        Sex
-# To treat the intercept as an ordinary population-level effect and avoid the centering parameterization, use 0 + Intercept on the right-hand side of the model formula.
+                        Sex 
     
 sim_data <- data.frame(PaidCourses,
                         StudyTime,
@@ -258,7 +257,7 @@ sim_data <- data.frame(PaidCourses,
                         Sex, 
                         Grade)
 
-priors <- c(set_prior("normal(0, 0.5)", class = "b", coef = "Intercept"),
+priors <- c(set_prior("normal(5.5, 0.5)", class = "b", coef = "Intercept"),
             set_prior("normal(0, 0.5)", class = "b", coef = "PaidCoursesTRUE"),
             set_prior("normal(0, 0.5)", class = "b", coef = "StudyTime"),
             set_prior("normal(0, 0.5)", class = "b", coef = "ExtraEducationalSupportTRUE"),
@@ -268,69 +267,103 @@ priors <- c(set_prior("normal(0, 0.5)", class = "b", coef = "Intercept"),
             set_prior("normal(0, 0.5)", class = "b", coef = "SexM"))
 
 if(fullrun){
-model_MM <- brm(
-            formula = Formula,
-            prior = priors,
-            data   = sim_data,
-            warmup = 500, 
-            iter   = 10000, 
-            chains = 6, 
-            inits  = "random",
-            cores  = 6,
-            seed = 123,
-            backend = "cmdstanr",
-            control = list(adapt_delta = 0.99, 
-                           max_treedepth = 17),
-            silent = TRUE)
-
-saveRDS(model_MM, "model_demo.rds")
+  model_math <- brm(
+              formula = Formula,
+              prior = priors,
+              data   = sim_data,
+              warmup = 500, 
+              iter   = 10000, 
+              chains = 6, 
+              inits  = "random",
+              cores  = 6,
+              seed = 123,
+              backend = "cmdstanr",
+              control = list(adapt_delta = 0.99, 
+                             max_treedepth = 17),
+              silent = TRUE,
+              refresh = 0)
+  
+  saveRDS(model_math, "./models/model_demo.rds")
 } else {
- model_MM <- readRDS("model_demo.rds")}
+  model_math <- readRDS("./models/model_demo.rds")
+}
 ```
-```{r}
 
-samples_MM <- tidy_draws(model_MM) %>%
+# Checking our posterior and chains!
+
+```{r fig4, out.width="80%", fig.align = "center"}
+model_math %>%
+  plot(combo = c("hist", "trace"), widths = c(1, 1.5),
+       theme = theme_bw(base_size = 10),
+       ask   = FALSE
+       )
+  
+```
+Good mixing, and clean normal estimates for all parameters!
+```{r}
+summary(model_math)
+```
+
+```{r}
+# now we sample from the model in order to show our predictions
+samples_math <- tidy_draws(model_math) %>%
   dplyr::select(starts_with("b_")) %>%
   pivot_longer(cols = 1:8, names_to = "Model1", values_to = "Value") %>%
-  mutate(Variabele = str_sub(Model1, 3)) %>%
-  dplyr::select(Variabele, Value)
+  mutate(Feature = as.factor(str_sub(Model1, 3))) %>%
+  dplyr::select(Feature, Value)
 
-ggplot(data = samples_MM, aes(x = Value, 
-                             y = Variabele, 
-                             fill = Variabele)) +
-  geom_density_ridges2(scale = 0.9, quantile_lines=TRUE,
-                      quantile_fun=function(x,...)mean(x)) +
-  scale_fill_viridis_d() +
-  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
-  theme_bw() +
-  theme(legend.position = "none") +
-  labs(y = " ", x = "Schatting van de  coefficient")
-
-
-
+real_vals <- data.frame(params = c("StudyTime", "SexM", "PaidCoursesTRUE", "InternetAccesTRUE", "Intercept", "HigherEducationAspirationTRUE", "ExtraEducationalSupportTRUE", "EducationParents"),
+                       True_Value = c(0.5, 0.5, 1, 0.6, 3.15, 0.7, 1, 1.5))
+                       
+samples_math <- left_join(samples_math, real_vals, by = c("Feature" = "params")) 
+                       
 ```
 
+# Bayesian Parameter Estimates 
 
-True values:
-  PaidCourses               = 1
-  StudyTime                 = 0.5 
-  ExtraEducationalSupport   = 1
-  HigherEducationAspiration = 0.5
-  InternetAcces             = 0.35 + #convenient way to get include negative effect
-  RegionHouse               = 0.5 
-  EducationParents          = 1.5
-  Sex                       = 0.4
+```{r fig5, out.width="80%", fig.align = "center"}
+ggplot(samples_math, aes(x=Value, y=Feature, fill=Feature)) +
+  geom_density_ridges2(scale = 0.9, 
+                       quantile_lines=TRUE,
+                       quantile_fun=function(x,...)mean(x)) +
+  scale_fill_viridis_d() +
+  geom_segment(data=samples_math,aes(x = True_Value,
+                   xend = True_Value,
+                   y = as.numeric(as.factor(Feature)),
+                   yend = as.numeric(as.factor(Feature))+1),
+               color = "red", fill="red") +
+  theme(legend.position = "none") +
+  labs(y = " ", x = "coefficient estimates", title="Bayesian parameter estimates") + 
+  scale_x_continuous(breaks=seq(0,3.25,0.25))
+```
+Almost all Parameter values are perfectly retrieved! PaidCourses is slightly underestimated,
+And Sex is slighty overestimated. But these results are very promising
+
 # How does the model perform in terms of predictions?
 ```{r}
-df_preds_MM1 <- as_tibble(predict(model_MM, newdata = sim_data))
+preds_raw <- as_tibble(predict(model_math, newdata = sim_data))
 
-df_preds_MM2 <- cbind(sim_data, df_preds_MM1)
+preds <- cbind(sim_data, preds_raw)
 
-
-ggplot() +
-    geom_segment(data = df_preds_MM2, aes(x = Grade, xend = Grade, y = Q2.5, yend = Q97.5), color = "grey50") +
-  geom_point(data = df_preds_MM2, aes(x = Grade, y = Estimate)) +
-  geom_abline(intercept = 0, slope = 1, color = "firebrick", linetype = "dashed") +
-  theme_bw()
+plot_data = preds %>%
+            mutate(pred_min=Estimate-Est.Error,
+                   pred_max=Estimate+Est.Error)
 ```
+
+```{r fig6, out.width="80%", fig.align = "center"}
+ggplot() +
+    geom_errorbar(data = plot_data, aes(x = Grade, xend = Grade, ymin=pred_min, ymax = pred_max), size=0.1, width=0.1, color = "red") +
+  geom_point(data = plot_data, aes(x = Grade, y = Estimate)) +
+  geom_abline(intercept = 0, slope = 1, color = "firebrick", linetype = "dashed") +
+  labs(y = "Predicted Grade", x = "True Grade", title="Grade vs. Predicted Grade")+
+  scale_x_continuous(breaks=seq(1,10,1)) +
+  scale_y_continuous(breaks=seq(1,10,1)) +
+  coord_fixed()
+
+
+```
+* This looks good! Most estimates overlap the true value within 1 sigma deviation.
+* Estimates seem consistent across the whole domain
+
+
 
