@@ -42,7 +42,10 @@ vignettes/*.pdf
 # Data formats
 *.csv
 
-#Don't track Tex files
+# Don't track model files
+*.rds
+
+# Don't track Tex files
 *.log
 *.aux
 *.nav
